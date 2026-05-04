@@ -226,4 +226,4 @@ Jesli chcesz bardziej stabilny stan:
 1. ustaw Vercel Cron wywolujacy `POST /api/status` co minute,
 2. albo przenies cache do Redis, Upstash albo Vercel KV.
 
-Obecna wersja nadal robi to, o co prosiles: po odpowiedzi probuje natychmiast przeliczyc wszystkie klucze w tle."# api.msxx.pl" 
+Obecna wersja nadal robi to, o co prosiles: po odpowiedzi probuje natychmiast przeliczyc wszystkie klucze w tle.

@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "^/$", "dest": "/index.html" },
+    { "src": "^/html$", "dest": "/api/html" },
+    { "src": "^/resolve-stream$", "dest": "/api/resolve-stream" },
+    { "src": "^/stream$", "dest": "/api/stream" },
+    { "src": "^/api/(.*)$", "dest": "/api/$1" },
+    { "handle": "filesystem" }
+  ]
+}

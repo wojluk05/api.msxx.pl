@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebScrapingAI Key Router</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        :root {
+            --bg-1: #08111f;
+            --bg-2: #10233d;
+            --bg-3: #174d4d;
+            --line: rgba(255,255,255,0.08);
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(13, 148, 136, 0.22), transparent 32%),
+                radial-gradient(circle at top right, rgba(59, 130, 246, 0.18), transparent 28%),
+                linear-gradient(145deg, var(--bg-1), var(--bg-2) 52%, var(--bg-3));
+            min-height: 100vh;
+        }
+
+        .glass-card {
+            background: rgba(8, 17, 31, 0.6);
+            backdrop-filter: blur(18px);
+            border: 1px solid var(--line);
+            box-shadow: 0 24px 80px rgba(3, 7, 18, 0.35);
+        }
+
+        .metric-ring {
+            background: conic-gradient(#14b8a6 var(--fill), rgba(255,255,255,0.08) 0deg);
+        }
+
+        .grid-fade {
+            background-image:
+                linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+            background-size: 40px 40px;
+            mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+        }
+    </style>
+</head>
+<body class="text-slate-300 p-6 md:p-12">
+
+    <div class="fixed inset-0 opacity-40 pointer-events-none grid-fade"></div>
+
+    <div id="auth-screen" class="fixed inset-0 z-[100] bg-[#0b1120] flex items-center justify-center p-4 transition-opacity duration-300">
+        <div class="glass-card p-10 rounded-3xl w-full max-w-sm border border-slate-700 text-center shadow-2xl">
+            <div class="w-16 h-16 bg-teal-400/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <i data-lucide="shield-check" class="text-teal-300 w-8 h-8"></i>
+            </div>
+            <h2 class="text-2xl font-bold text-white mb-2">Panel routingu</h2>
+            <p class="text-xs text-slate-400 mb-8 uppercase tracking-[0.35em]">Podaj haslo glowne</p>
+            
+            <input id="app-pwd" type="password" placeholder="Hasło..." class="w-full bg-slate-800 border-none rounded-xl p-4 text-center text-white focus:ring-2 focus:ring-blue-500 outline-none mb-4 tracking-widest">
+            <p id="auth-error" class="text-red-400 text-xs font-bold mb-4 hidden">Bledne haslo albo brak dostepu.</p>
+            
+            <button id="login-btn" class="w-full bg-teal-500 text-slate-950 font-bold py-4 rounded-xl hover:bg-teal-400 transition-colors">Odblokuj</button>
+        </div>
+    </div>
+
+    <div id="dashboard" class="relative max-w-7xl mx-auto opacity-0 transition-opacity duration-500 hidden">
+        <header class="flex flex-col xl:flex-row justify-between items-start xl:items-end gap-8 mb-10">
+            <div class="max-w-3xl">
+                <p class="text-[11px] uppercase tracking-[0.35em] text-teal-300/80 mb-3">WebScrapingAI orchestration layer</p>
+                <h1 class="text-4xl md:text-5xl font-extrabold tracking-tight text-white">Twoje API wybiera klucz z najwieksza dostepnoscia.</h1>
+                <p class="text-slate-300/80 text-sm md:text-base mt-4 leading-7">Inny serwis wysyla jedno zapytanie do tego projektu, a backend wybiera najlepszy klucz WebScrapingAI na podstawie `remaining_api_calls`. Kazde wychodzace zapytanie jest wymuszane z `proxy=residential` i `js=true`.</p>
+            </div>
+            <div class="flex flex-wrap gap-3">
+                <button id="refresh-btn" class="bg-white/10 hover:bg-white/15 text-white px-5 py-3 rounded-2xl font-bold transition-all flex items-center gap-2 border border-white/10">
+                    <i data-lucide="refresh-cw"></i> Odswiez teraz
+                </button>
+                <button id="logout-btn" class="text-slate-300 hover:text-white px-5 py-3 rounded-2xl font-bold transition-all border border-white/10">Wyloguj</button>
+            </div>
+        </header>
+
+        <section class="grid grid-cols-1 xl:grid-cols-[1.35fr_0.95fr] gap-6 mb-6">
+            <div class="glass-card rounded-[28px] p-6 md:p-8 border border-white/10">
+                <div class="flex items-start justify-between gap-4 mb-8">
+                    <div>
+                        <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Silnik wyboru</p>
+                        <h2 class="text-2xl font-bold text-white mt-2">Aktualnie wybrany klucz</h2>
+                    </div>
+                    <div id="best-key-pill" class="hidden text-[11px] uppercase tracking-[0.3em] px-3 py-2 rounded-full bg-teal-400/10 text-teal-200 border border-teal-300/20">aktywny klucz</div>
+                </div>
+                <div id="hero-state" class="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-6 items-center"></div>
+            </div>
+
+            <div class="glass-card rounded-[28px] p-6 md:p-8 border border-white/10">
+                <div class="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                        <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Stan systemu</p>
+                        <h2 class="text-2xl font-bold text-white mt-2">Metryki routingu</h2>
+                    </div>
+                    <i data-lucide="activity" class="w-6 h-6 text-teal-300"></i>
+                </div>
+                <div id="summary-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
+            </div>
+        </section>
+
+        <section class="glass-card rounded-[28px] p-6 md:p-8 border border-white/10 mb-6">
+            <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
+                <div>
+                    <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Klucze z env</p>
+                    <h2 class="text-2xl font-bold text-white mt-2">Status wszystkich kluczy</h2>
+                </div>
+                <div id="refresh-meta" class="text-sm text-slate-400"></div>
+            </div>
+            <div id="keys-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5"></div>
+        </section>
+
+        <section class="glass-card rounded-[28px] p-6 md:p-8 border border-white/10">
+            <div class="flex items-center justify-between gap-4 mb-5">
+                <div>
+                    <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Konfiguracja</p>
+                    <h2 class="text-2xl font-bold text-white mt-2">Jak dodawac klucze w Vercel</h2>
+                </div>
+                <i data-lucide="key-round" class="w-6 h-6 text-amber-300"></i>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 text-sm text-slate-300/90 leading-7">
+                <div class="rounded-3xl border border-white/10 bg-black/20 p-5">
+                    <p class="text-slate-100 font-semibold mb-3">Wymagane env</p>
+                    <p>Dodaj po jednym kluczu na zmienna: WEBSCRAPINGAI_KEY_01, WEBSCRAPINGAI_KEY_02, WEBSCRAPINGAI_KEY_03 i tak dalej.</p>
+                    <p>Jesli chcesz zabezpieczyc dashboard i API, ustaw APP_PASSWORD i wysylaj je w naglowku x-app-password.</p>
+                </div>
+                <div class="rounded-3xl border border-white/10 bg-black/20 p-5">
+                    <p class="text-slate-100 font-semibold mb-3">Wymuszone ustawienia</p>
+                    <p>Kazdy request do providera jest wykonywany z `proxy=residential` oraz `js=true`, bez wzgledu na dane od klienta.</p>
+                    <p>WEBSCRAPINGAI_KEYS tez dziala jako fallback: JSON array albo lista po przecinku lub nowych liniach.</p>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        window.dashboardPassword = localStorage.getItem('dash_pwd') || '';
+    </script>
+    <script src="router-dashboard.js"></script>
+</body>
+</html>
