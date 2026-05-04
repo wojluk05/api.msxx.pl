@@ -1,13 +1,15 @@
-import { createRequire } from 'module';
 import { createBrowserService } from './lib/scraper-browser.js';
 import { extractSourcesFromHtml, extractSearchResults } from './lib/scraper-extractors.js';
+import { detectCloudflareChallenge } from './lib/scraper-cloudflare.js';
 import {
     buildStatusResponse,
     ensureFreshStatuses,
     getCachedStatuses,
     refreshAllKeyStatuses,
-    queueBackgroundRefresh
+    queueBackgroundRefresh,
+    forwardHtmlCompatRequest
 } from './lib/webscraping-router.js';
+import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const express = require('express');
@@ -82,6 +84,53 @@ function requireApiKey(req, res, next) {
     res.status(401).json({ ok: false, error: 'Invalid API key' });
 }
 
+function hasWebscrapingKeys() {
+    const packed = String(process.env.WEBSCRAPINGAI_KEYS || '').trim();
+    if (packed) return true;
+    return Object.keys(process.env).some(
+        (key) => key.startsWith('WEBSCRAPINGAI_KEY_') && process.env[key]
+    );
+}
+
+async function fetchHtmlWithFallback(targetUrl, options = {}) {
+    try {
+        return await browserService.fetchHtml(targetUrl, options);
+    } catch (browserError) {
+        if (!hasWebscrapingKeys()) {
+            throw browserError;
+        }
+
+        const query = {
+            url: targetUrl,
+            js: options.render === false ? 'false' : 'true',
+            proxy: 'residential'
+        };
+
+        if (options.waitForSelector) {
+            query.wait_for_selector = options.waitForSelector;
+        }
+
+        const result = await forwardHtmlCompatRequest(query);
+        const html = result.body ? result.body.toString('utf8') : '';
+        const blocked = detectCloudflareChallenge(html, targetUrl);
+
+        if (!result.ok && result.status >= 500) {
+            throw new Error(`Browser failed: ${browserError.message} | WebscrapingAI failed: HTTP ${result.status}`);
+        }
+
+        return {
+            ok: !blocked && result.ok,
+            blocked,
+            strategy: 'webscraping-ai',
+            html,
+            finalUrl: targetUrl,
+            status: result.status,
+            trace: [{ strategy: 'browser', error: browserError.message }, { strategy: 'webscraping-ai', blocked }],
+            errors: [browserError.message]
+        };
+    }
+}
+
 app.get('/health', (_req, res) => {
     res.json({
         ok: true,
@@ -108,7 +157,7 @@ app.post('/api/extract-sources', requireApiKey, async (req, res) => {
     }
 
     try {
-        const result = await browserService.fetchHtml(targetUrl, {
+        const result = await fetchHtmlWithFallback(targetUrl, {
             render: parseBoolean(req.body.render, true),
             waitForSelector: String(req.body.waitForSelector || '#link-list').trim(),
             sessionKey: String(req.body.sessionKey || '').trim(),
@@ -147,7 +196,7 @@ app.get('/api/search', requireApiKey, async (req, res) => {
     const targetUrl = `https://zaluknij.cc/wyszukiwarka?phrase=${encodeURIComponent(query)}`;
 
     try {
-        const result = await browserService.fetchHtml(targetUrl, {
+        const result = await fetchHtmlWithFallback(targetUrl, {
             render: parseBoolean(getFirstQueryValue(req.query.render), false),
             sessionKey: String(getFirstQueryValue(req.query.session_number) || '').trim(),
             timeoutMs: toPositiveInt(getFirstQueryValue(req.query.timeout_ms), 30000, 5000)
@@ -187,7 +236,7 @@ app.get('/', requireApiKey, async (req, res) => {
     const timeoutMs = toPositiveInt(getFirstQueryValue(req.query.timeout_ms), 35000, 5000);
 
     try {
-        const result = await browserService.fetchHtml(targetUrl, {
+        const result = await fetchHtmlWithFallback(targetUrl, {
             render,
             waitForSelector,
             sessionKey,
