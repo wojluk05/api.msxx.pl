@@ -19,7 +19,7 @@ const app = express();
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || process.env.SCRAPER_PORT || 8787);
-const API_KEY = String(process.env.SELF_SCRAPER_API_KEY || '').trim();
+const API_KEY = String(process.env.SELF_SCRAPER_API_KEY || '').trim().replace(/^["']+|["']+$/g, '');
 
 const browserService = createBrowserService({
     browserTimeoutMs: process.env.BROWSER_TIMEOUT_MS,
@@ -73,8 +73,8 @@ function requireApiKey(req, res, next) {
         return;
     }
 
-    const fromQuery = String(getFirstQueryValue(req.query.api_key) || '').trim();
-    const fromHeader = String(req.headers['x-api-key'] || '').trim();
+    const fromQuery = String(getFirstQueryValue(req.query.api_key) || '').trim().replace(/^["']+|["']+$/g, '');
+    const fromHeader = String(req.headers['x-api-key'] || '').trim().replace(/^["']+|["']+$/g, '');
 
     if (fromQuery === API_KEY || fromHeader === API_KEY) {
         next();
@@ -82,6 +82,14 @@ function requireApiKey(req, res, next) {
     }
 
     res.status(401).json({ ok: false, error: 'Invalid API key' });
+}
+
+function getAutoSessionKey(targetUrl) {
+    try {
+        return new URL(targetUrl).hostname;
+    } catch {
+        return '';
+    }
 }
 
 function hasWebscrapingKeys() {
@@ -159,10 +167,10 @@ app.post('/api/extract-sources', requireApiKey, async (req, res) => {
     try {
         const result = await fetchHtmlWithFallback(targetUrl, {
             render: parseBoolean(req.body.render, true),
-            waitForSelector: String(req.body.waitForSelector || '#link-list').trim(),
-            sessionKey: String(req.body.sessionKey || '').trim(),
+            waitForSelector: String(req.body.waitForSelector || '[data-iframe]').trim(),
+            sessionKey: String(req.body.sessionKey || '') || getAutoSessionKey(targetUrl),
             timeoutMs: toPositiveInt(req.body.timeoutMs, 35000, 5000),
-            selectorTimeoutMs: toPositiveInt(req.body.selectorTimeoutMs, 9000, 500)
+            selectorTimeoutMs: toPositiveInt(req.body.selectorTimeoutMs, 12000, 500)
         });
 
         const sources = extractSourcesFromHtml(result.html || '');
@@ -198,7 +206,7 @@ app.get('/api/search', requireApiKey, async (req, res) => {
     try {
         const result = await fetchHtmlWithFallback(targetUrl, {
             render: parseBoolean(getFirstQueryValue(req.query.render), false),
-            sessionKey: String(getFirstQueryValue(req.query.session_number) || '').trim(),
+            sessionKey: String(getFirstQueryValue(req.query.session_number) || '') || getAutoSessionKey(targetUrl),
             timeoutMs: toPositiveInt(getFirstQueryValue(req.query.timeout_ms), 30000, 5000)
         });
 
@@ -239,9 +247,9 @@ app.get('/', requireApiKey, async (req, res) => {
         const result = await fetchHtmlWithFallback(targetUrl, {
             render,
             waitForSelector,
-            sessionKey,
+            sessionKey: sessionKey || getAutoSessionKey(targetUrl),
             timeoutMs,
-            selectorTimeoutMs: toPositiveInt(getFirstQueryValue(req.query.selector_timeout_ms), 8000, 500)
+            selectorTimeoutMs: toPositiveInt(getFirstQueryValue(req.query.selector_timeout_ms), 12000, 500)
         });
 
         res.setHeader('x-self-scraper-strategy', result.strategy);
@@ -253,6 +261,26 @@ app.get('/', requireApiKey, async (req, res) => {
     }
 });
 
+async function prewarmTargetSites() {
+    const sites = (process.env.PREWARM_SITES || 'https://zaluknij.cc/').split(',').map((s) => s.trim()).filter(Boolean);
+    for (const siteUrl of sites) {
+        try {
+            const hostname = new URL(siteUrl).hostname;
+            console.log(`[prewarm] fetching ${siteUrl}`);
+            await browserService.fetchHtml(siteUrl, {
+                render: true,
+                sessionKey: hostname,
+                timeoutMs: 45000,
+                selectorTimeoutMs: 5000
+            });
+            console.log(`[prewarm] done ${hostname}`);
+        } catch (err) {
+            console.warn(`[prewarm] failed ${siteUrl}: ${err && err.message}`);
+        }
+    }
+}
+
 app.listen(PORT, HOST, () => {
     console.log(`[scraper-server] listening on http://${HOST}:${PORT}`);
+    browserService.warmUp().then(() => prewarmTargetSites()).catch(() => null);
 });
