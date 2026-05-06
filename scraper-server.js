@@ -86,88 +86,23 @@ function hasWebscrapingKeys() {
     );
 }
 
-function hasZenrowsKey() {
-    return Boolean(String(process.env.ZENROWS_API_KEY || '').trim());
-}
-
-async function fetchWithZenrows(targetUrl, options = {}) {
-    const zenrowsKey = String(process.env.ZENROWS_API_KEY || '').trim();
-    if (!zenrowsKey) throw new Error('ZENROWS_API_KEY not configured');
-
-    const useJs = options.render !== false;
-    const usePremiumProxy = String(process.env.ZENROWS_PREMIUM_PROXY || 'true').trim().toLowerCase() !== 'false';
-    const timeoutMs = toPositiveInt(options.timeoutMs, 35000, 5000);
-
-    const url = new URL('https://api.zenrows.com/v1/');
-    url.searchParams.set('apikey', zenrowsKey);
-    url.searchParams.set('url', targetUrl);
-    if (useJs) {
-        url.searchParams.set('js_render', 'true');
-    }
-    if (usePremiumProxy) {
-        url.searchParams.set('premium_proxy', 'true');
-    }
-    if (options.waitForSelector && useJs) {
-        url.searchParams.set('wait_for', options.waitForSelector);
-    } else if (useJs) {
-        url.searchParams.set('wait', '2000');
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-        const response = await fetch(url.toString(), { signal: controller.signal });
-        const html = await response.text();
-
-        if (!response.ok) {
-            throw new Error(`Zenrows HTTP ${response.status}: ${html.slice(0, 120)}`);
-        }
-
-        const blocked = detectCloudflareChallenge(html, targetUrl);
-
-        return {
-            ok: !blocked,
-            blocked,
-            strategy: 'zenrows',
-            html,
-            finalUrl: targetUrl,
-            status: 200,
-            trace: [{ strategy: 'zenrows', blocked }],
-            errors: []
-        };
-    } finally {
-        clearTimeout(timeoutId);
-    }
-}
-
 async function fetchHtmlWithFallback(targetUrl, options = {}) {
-    if (hasZenrowsKey()) {
-        try {
-            const result = await fetchWithZenrows(targetUrl, options);
-            if (result.ok) return result;
-        } catch (zenErr) {
-            console.warn(`[zenrows] ${targetUrl}: ${zenErr.message}`);
-        }
-    }
-
     if (!hasWebscrapingKeys()) {
         throw new Error('No scraping service configured (set WEBSCRAPINGAI_KEY_*)');
     }
 
     const wsaiTimeoutMs = Math.min(toPositiveInt(options.timeoutMs, 30000, 5000), 30000);
+    const useJs = options.render !== false;
 
     const buildQuery = (withSelector) => {
         const q = {
             url: targetUrl,
-            js: options.render === false ? 0 : 1,
+            js: useJs ? 1 : 0,
             proxy: 'residential',
             timeout: wsaiTimeoutMs
         };
         if (withSelector && options.waitForSelector) {
             q.wait_for = options.waitForSelector;
-        } else if (options.render !== false) {
-            q.wait_for = '6000';
         }
         return q;
     };
@@ -175,7 +110,7 @@ async function fetchHtmlWithFallback(targetUrl, options = {}) {
     let result = await forwardHtmlCompatRequest(buildQuery(true));
 
     if (!result.ok && result.status >= 500) {
-        console.warn(`[wsai] ${targetUrl} → HTTP ${result.status} with wait_for selector, retrying without...`);
+        console.warn(`[wsai] ${targetUrl} → HTTP ${result.status} with wait_for, retrying without...`);
         result = await forwardHtmlCompatRequest(buildQuery(false));
     }
 
