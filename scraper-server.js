@@ -1,4 +1,3 @@
-import { createBrowserService } from './lib/scraper-browser.js';
 import { extractSourcesFromHtml, extractSearchResults } from './lib/scraper-extractors.js';
 import { detectCloudflareChallenge } from './lib/scraper-cloudflare.js';
 import {
@@ -153,23 +152,33 @@ async function fetchHtmlWithFallback(targetUrl, options = {}) {
     }
 
     if (!hasWebscrapingKeys()) {
-        throw new Error('No scraping service configured (set ZENROWS_API_KEY or WEBSCRAPINGAI_KEY_*)');
+        throw new Error('No scraping service configured (set WEBSCRAPINGAI_KEY_*)');
     }
 
     const wsaiTimeoutMs = Math.min(toPositiveInt(options.timeoutMs, 30000, 5000), 30000);
 
-    const query = {
-        url: targetUrl,
-        js: options.render === false ? 0 : 1,
-        proxy: 'residential',
-        timeout: wsaiTimeoutMs
+    const buildQuery = (withSelector) => {
+        const q = {
+            url: targetUrl,
+            js: options.render === false ? 0 : 1,
+            proxy: 'residential',
+            timeout: wsaiTimeoutMs
+        };
+        if (withSelector && options.waitForSelector) {
+            q.wait_for = options.waitForSelector;
+        } else if (options.render !== false) {
+            q.wait_for = '6000';
+        }
+        return q;
     };
 
-    if (options.waitForSelector) {
-        query.wait_for_css = options.waitForSelector;
+    let result = await forwardHtmlCompatRequest(buildQuery(true));
+
+    if (!result.ok && result.status >= 500) {
+        console.warn(`[wsai] ${targetUrl} → HTTP ${result.status} with wait_for selector, retrying without...`);
+        result = await forwardHtmlCompatRequest(buildQuery(false));
     }
 
-    const result = await forwardHtmlCompatRequest(query);
     const html = result.body ? result.body.toString('utf8') : '';
 
     if (!result.ok && result.status >= 500) {
@@ -197,7 +206,6 @@ app.get('/health', (_req, res) => {
         ok: true,
         service: 'scraper-server',
         sessions: 0,
-        zenrows: hasZenrowsKey(),
         timestamp: new Date().toISOString()
     });
 });
@@ -387,6 +395,5 @@ app.get('/', requireApiKey, async (req, res) => {
 
 app.listen(PORT, HOST, () => {
     console.log(`[scraper-server] listening on http://${HOST}:${PORT}`);
-    console.log(`[scraper-server] zenrows: ${hasZenrowsKey() ? 'configured' : 'not configured'}`);
     console.log(`[scraper-server] webscraping.ai: ${hasWebscrapingKeys() ? 'configured' : 'not configured'}`);
 });
