@@ -269,8 +269,10 @@ async function prewarmTargetSites() {
             console.log(`[prewarm] fetching ${siteUrl}`);
             await browserService.fetchHtml(siteUrl, {
                 render: true,
+                preferRealBrowser: true,
+                connectTimeoutMs: 60000,
                 sessionKey: hostname,
-                timeoutMs: 45000,
+                timeoutMs: 60000,
                 selectorTimeoutMs: 5000
             });
             console.log(`[prewarm] done ${hostname}`);
