@@ -156,23 +156,29 @@ async function fetchHtmlWithFallback(targetUrl, options = {}) {
         throw new Error('No scraping service configured (set ZENROWS_API_KEY or WEBSCRAPINGAI_KEY_*)');
     }
 
+    const wsaiTimeoutMs = Math.min(toPositiveInt(options.timeoutMs, 30000, 5000), 30000);
+
     const query = {
         url: targetUrl,
-        js: options.render === false ? 'false' : 'true',
-        proxy: 'residential'
+        js: options.render === false ? 0 : 1,
+        proxy: 'residential',
+        timeout: wsaiTimeoutMs
     };
 
     if (options.waitForSelector) {
-        query.wait_for_selector = options.waitForSelector;
+        query.wait_for_css = options.waitForSelector;
     }
 
     const result = await forwardHtmlCompatRequest(query);
     const html = result.body ? result.body.toString('utf8') : '';
-    const blocked = detectCloudflareChallenge(html, targetUrl);
 
     if (!result.ok && result.status >= 500) {
-        throw new Error(`WebscrapingAI HTTP ${result.status}`);
+        const bodySnippet = html.slice(0, 300);
+        console.error(`[wsai] ${targetUrl} → HTTP ${result.status}: ${bodySnippet}`);
+        throw new Error(`WebscrapingAI HTTP ${result.status}${bodySnippet ? `: ${bodySnippet}` : ''}`);
     }
+
+    const blocked = detectCloudflareChallenge(html, targetUrl);
 
     return {
         ok: !blocked && result.ok,
@@ -203,6 +209,76 @@ app.get('/api/keys/status', requireApiKey, async (req, res) => {
         : await ensureFreshStatuses();
     res.json(buildStatusResponse(statuses || getCachedStatuses()));
     queueBackgroundRefresh();
+});
+
+app.get('/api/debug-wsai', requireApiKey, async (req, res) => {
+    const targetUrl = normalizeHttpUrl(String(req.query.url || 'https://zaluknij.cc/'));
+    if (!targetUrl) {
+        res.status(400).json({ ok: false, error: 'Missing url' });
+        return;
+    }
+
+    const rawKeys = Object.entries(process.env)
+        .filter(([k, v]) => k.startsWith('WEBSCRAPINGAI_KEY_') && v)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, v]) => String(v).trim())
+        .filter(Boolean);
+
+    const packed = String(process.env.WEBSCRAPINGAI_KEYS || '').trim();
+    if (packed) {
+        const list = packed.startsWith('[')
+            ? JSON.parse(packed)
+            : packed.split(/[\r\n,;]+/).map(k => k.trim()).filter(Boolean);
+        list.forEach(k => { if (typeof k === 'string' && k) rawKeys.push(k); });
+    }
+
+    if (!rawKeys.length) {
+        res.json({ ok: false, error: 'No WEBSCRAPINGAI_KEY_* configured' });
+        return;
+    }
+
+    const apiKey = rawKeys[0];
+    const useJs = req.query.js !== '0';
+    const timeout = toPositiveInt(req.query.timeout, 25000, 5000);
+
+    const wsUrl = new URL('https://api.webscraping.ai/html');
+    wsUrl.searchParams.set('api_key', apiKey);
+    wsUrl.searchParams.set('url', targetUrl);
+    wsUrl.searchParams.set('js', useJs ? '1' : '0');
+    wsUrl.searchParams.set('proxy', 'residential');
+    wsUrl.searchParams.set('timeout', String(timeout));
+
+    const maskedUrl = wsUrl.toString().replace(apiKey, apiKey.slice(0, 6) + '***');
+
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), timeout + 10000);
+    const startMs = Date.now();
+
+    try {
+        const response = await fetch(wsUrl.toString(), { signal: controller.signal });
+        const elapsed = Date.now() - startMs;
+        const body = await response.text();
+        const respHeaders = {};
+        ['x-credits-used', 'x-credits-remaining', 'x-target-status', 'content-type', 'x-target-url'].forEach(h => {
+            const v = response.headers.get(h);
+            if (v) respHeaders[h] = v;
+        });
+
+        res.json({
+            ok: response.ok,
+            status: response.status,
+            elapsedMs: elapsed,
+            headers: respHeaders,
+            bodyLength: body.length,
+            bodyPreview: body.slice(0, 2000),
+            requestUrl: maskedUrl
+        });
+    } catch (err) {
+        const elapsed = Date.now() - startMs;
+        res.json({ ok: false, error: err.message, elapsedMs: elapsed, requestUrl: maskedUrl });
+    } finally {
+        clearTimeout(tid);
+    }
 });
 
 app.post('/api/extract-sources', requireApiKey, async (req, res) => {
