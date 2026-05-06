@@ -21,19 +21,6 @@ const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || process.env.SCRAPER_PORT || 8787);
 const API_KEY = String(process.env.SELF_SCRAPER_API_KEY || '').trim().replace(/^["']+|["']+$/g, '');
 
-const browserService = createBrowserService({
-    browserTimeoutMs: process.env.BROWSER_TIMEOUT_MS,
-    sessionTtlMs: process.env.SESSION_TTL_MS,
-    headless: process.env.BROWSER_HEADLESS ?? 'true',
-    blockResources: process.env.BLOCK_RESOURCES ?? 'true',
-    proxyServer: process.env.UPSTREAM_PROXY_SERVER,
-    proxyUsername: process.env.UPSTREAM_PROXY_USERNAME,
-    proxyPassword: process.env.UPSTREAM_PROXY_PASSWORD,
-    cfMaxWaitMs: process.env.CF_MAX_WAIT_MS,
-    cfClickRetries: process.env.CF_CLICK_RETRIES,
-    userAgent: process.env.SCRAPER_USER_AGENT
-});
-
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
@@ -100,50 +87,111 @@ function hasWebscrapingKeys() {
     );
 }
 
-async function fetchHtmlWithFallback(targetUrl, options = {}) {
+function hasZenrowsKey() {
+    return Boolean(String(process.env.ZENROWS_API_KEY || '').trim());
+}
+
+async function fetchWithZenrows(targetUrl, options = {}) {
+    const zenrowsKey = String(process.env.ZENROWS_API_KEY || '').trim();
+    if (!zenrowsKey) throw new Error('ZENROWS_API_KEY not configured');
+
+    const useJs = options.render !== false;
+    const usePremiumProxy = String(process.env.ZENROWS_PREMIUM_PROXY || 'true').trim().toLowerCase() !== 'false';
+    const timeoutMs = toPositiveInt(options.timeoutMs, 35000, 5000);
+
+    const url = new URL('https://api.zenrows.com/v1/');
+    url.searchParams.set('apikey', zenrowsKey);
+    url.searchParams.set('url', targetUrl);
+    if (useJs) {
+        url.searchParams.set('js_render', 'true');
+    }
+    if (usePremiumProxy) {
+        url.searchParams.set('premium_proxy', 'true');
+    }
+    if (options.waitForSelector && useJs) {
+        url.searchParams.set('wait_for', options.waitForSelector);
+    } else if (useJs) {
+        url.searchParams.set('wait', '2000');
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-        return await browserService.fetchHtml(targetUrl, options);
-    } catch (browserError) {
-        if (!hasWebscrapingKeys()) {
-            throw browserError;
+        const response = await fetch(url.toString(), { signal: controller.signal });
+        const html = await response.text();
+
+        if (!response.ok) {
+            throw new Error(`Zenrows HTTP ${response.status}: ${html.slice(0, 120)}`);
         }
 
-        const query = {
-            url: targetUrl,
-            js: options.render === false ? 'false' : 'true',
-            proxy: 'residential'
-        };
-
-        if (options.waitForSelector) {
-            query.wait_for_selector = options.waitForSelector;
-        }
-
-        const result = await forwardHtmlCompatRequest(query);
-        const html = result.body ? result.body.toString('utf8') : '';
         const blocked = detectCloudflareChallenge(html, targetUrl);
 
-        if (!result.ok && result.status >= 500) {
-            throw new Error(`Browser failed: ${browserError.message} | WebscrapingAI failed: HTTP ${result.status}`);
-        }
-
         return {
-            ok: !blocked && result.ok,
+            ok: !blocked,
             blocked,
-            strategy: 'webscraping-ai',
+            strategy: 'zenrows',
             html,
             finalUrl: targetUrl,
-            status: result.status,
-            trace: [{ strategy: 'browser', error: browserError.message }, { strategy: 'webscraping-ai', blocked }],
-            errors: [browserError.message]
+            status: 200,
+            trace: [{ strategy: 'zenrows', blocked }],
+            errors: []
         };
+    } finally {
+        clearTimeout(timeoutId);
     }
+}
+
+async function fetchHtmlWithFallback(targetUrl, options = {}) {
+    if (hasZenrowsKey()) {
+        try {
+            const result = await fetchWithZenrows(targetUrl, options);
+            if (result.ok) return result;
+        } catch (zenErr) {
+            console.warn(`[zenrows] ${targetUrl}: ${zenErr.message}`);
+        }
+    }
+
+    if (!hasWebscrapingKeys()) {
+        throw new Error('No scraping service configured (set ZENROWS_API_KEY or WEBSCRAPINGAI_KEY_*)');
+    }
+
+    const query = {
+        url: targetUrl,
+        js: options.render === false ? 'false' : 'true',
+        proxy: 'residential'
+    };
+
+    if (options.waitForSelector) {
+        query.wait_for_selector = options.waitForSelector;
+    }
+
+    const result = await forwardHtmlCompatRequest(query);
+    const html = result.body ? result.body.toString('utf8') : '';
+    const blocked = detectCloudflareChallenge(html, targetUrl);
+
+    if (!result.ok && result.status >= 500) {
+        throw new Error(`WebscrapingAI HTTP ${result.status}`);
+    }
+
+    return {
+        ok: !blocked && result.ok,
+        blocked,
+        strategy: 'webscraping-ai',
+        html,
+        finalUrl: targetUrl,
+        status: result.status,
+        trace: [{ strategy: 'webscraping-ai', blocked }],
+        errors: []
+    };
 }
 
 app.get('/health', (_req, res) => {
     res.json({
         ok: true,
         service: 'scraper-server',
-        sessions: browserService.sessionStore.count(),
+        sessions: 0,
+        zenrows: hasZenrowsKey(),
         timestamp: new Date().toISOString()
     });
 });
@@ -261,28 +309,8 @@ app.get('/', requireApiKey, async (req, res) => {
     }
 });
 
-async function prewarmTargetSites() {
-    const sites = (process.env.PREWARM_SITES || 'https://zaluknij.cc/').split(',').map((s) => s.trim()).filter(Boolean);
-    for (const siteUrl of sites) {
-        try {
-            const hostname = new URL(siteUrl).hostname;
-            console.log(`[prewarm] fetching ${siteUrl}`);
-            await browserService.fetchHtml(siteUrl, {
-                render: true,
-                preferRealBrowser: true,
-                connectTimeoutMs: 60000,
-                sessionKey: hostname,
-                timeoutMs: 60000,
-                selectorTimeoutMs: 5000
-            });
-            console.log(`[prewarm] done ${hostname}`);
-        } catch (err) {
-            console.warn(`[prewarm] failed ${siteUrl}: ${err && err.message}`);
-        }
-    }
-}
-
 app.listen(PORT, HOST, () => {
     console.log(`[scraper-server] listening on http://${HOST}:${PORT}`);
-    browserService.warmUp().then(() => prewarmTargetSites()).catch(() => null);
+    console.log(`[scraper-server] zenrows: ${hasZenrowsKey() ? 'configured' : 'not configured'}`);
+    console.log(`[scraper-server] webscraping.ai: ${hasWebscrapingKeys() ? 'configured' : 'not configured'}`);
 });
